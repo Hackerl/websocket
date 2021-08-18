@@ -43,6 +43,7 @@ private:
     std::string mUri;
     std::string mHost;
     std::string mScheme;
+    std::string mKey;
 
 private:
     IWebSocketHandler *mHandler;

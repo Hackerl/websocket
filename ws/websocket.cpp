@@ -2,10 +2,11 @@
 #include <event2/http.h>
 #include <cstring>
 #include <common/log.h>
-#include <common/utils/string_helper.h>
+#include <common/utils/random.h>
+#include <common/utils/base64.h>
+#include <openssl/sha.h>
 
-constexpr auto KEY = "dGhlIHNhbXBsZSBub25jZQ==";
-constexpr auto ACCEPT_KEY = "s3pPLMBiTxaQ9kYGzzhZRbK+xOo=";
+constexpr auto MAGIC = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 
 CWebSocket::CWebSocket(IWebSocketHandler *handler, event_base *base, evdns_base *dnsBase) {
     mHandler = handler;
@@ -137,13 +138,18 @@ void CWebSocket::onBufferEvent(bufferevent *bev, short what) {
 void CWebSocket::handshake() {
     LOG_INFO("handshake");
 
+    char buffer[16] = {};
+
+    CRandom().fill(buffer, sizeof(buffer));
+    mKey = CBase64::encode((const unsigned char *)buffer, sizeof(buffer));
+
     evbuffer *output = bufferevent_get_output(mBev);
 
     evbuffer_add_printf(output, "GET %s HTTP/1.1\r\n", mUri.c_str());
     evbuffer_add_printf(output, "Host: %s:%d\r\n", mHost.c_str(), mPort);
     evbuffer_add_printf(output, "Upgrade: websocket\r\n");
     evbuffer_add_printf(output, "Connection: upgrade\r\n");
-    evbuffer_add_printf(output, "Sec-WebSocket-Key: %s\r\n", KEY);
+    evbuffer_add_printf(output, "Sec-WebSocket-Key: %s\r\n", mKey.c_str());
     evbuffer_add_printf(output, "Sec-WebSocket-Version: 13\r\n");
     evbuffer_add_printf(output, "Origin: %s://%s:%d\r\n", mScheme.c_str(), mHost.c_str(), mPort);
     evbuffer_add_printf(output, "\r\n");
@@ -212,8 +218,14 @@ void CWebSocket::onChallenge(bufferevent *bev) {
                 break;
             }
 
-            if (it->second != ACCEPT_KEY) {
-                LOG_ERROR("websocket accept key error: %s", it->second.c_str());
+            std::string data = mKey + MAGIC;
+            unsigned char digest[SHA_DIGEST_LENGTH] = {};
+
+            SHA1((const unsigned char *)data.data(), data.size(), digest);
+            std::string hash = CBase64::encode(digest, SHA_DIGEST_LENGTH);
+
+            if (it->second != hash) {
+                LOG_ERROR("websocket hash error");
 
                 disconnect();
                 break;

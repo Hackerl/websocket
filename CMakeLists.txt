@@ -15,7 +15,8 @@ set(EVENT__DISABLE_SAMPLES ON CACHE BOOL "disable event samples")
 set(EVENT__DISABLE_OPENSSL ON CACHE BOOL "disable event openssl")
 set(EVENT__DISABLE_BENCHMARK ON CACHE BOOL "disable event benchmark")
 
+include(FindOpenSSL)
 include(cmake/libevent.cmake)
 
 add_executable(websocket main.cpp ws/websocket.cpp)
-target_link_libraries(websocket event_core_static event_extra_static $<$<BOOL:${STATIC_BUILD}>:-static-pie>)
+target_link_libraries(websocket event_core_static event_extra_static OpenSSL::Crypto $<$<BOOL:${STATIC_BUILD}>:-static-pie>)

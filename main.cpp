@@ -9,6 +9,10 @@ int main() {
     event_base *base = event_base_new();
     evdns_base *dnsBase = evdns_base_new(base, EVDNS_BASE_INITIALIZE_NAMESERVERS);
 
+    CWebSocket ws(nullptr, base, dnsBase);
+
+    ws.connect("URL");
+
     event_base_dispatch(base);
 
     event_base_free(base);
