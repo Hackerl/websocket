@@ -1,12 +1,31 @@
 #include "websocket.h"
 #include <event2/http.h>
 #include <cstring>
+#include <memory>
 #include <common/log.h>
 #include <common/utils/random.h>
 #include <common/utils/base64.h>
 #include <openssl/sha.h>
 
+constexpr auto TWO_BYTE_PAYLOAD_LENGTH = 126U;
+constexpr auto EIGHT_BYTE_PAYLOAD_LENGTH = 127U;
+
 constexpr auto MAGIC = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
+
+#pragma pack(push, 1)
+
+struct CHeader {
+    unsigned int opcode : 4;
+    unsigned int reserved3 : 1;
+    unsigned int reserved2 : 1;
+    unsigned int reserved1 : 1;
+    unsigned int final : 1;
+    unsigned int length : 7;
+    unsigned int mask : 1;
+};
+
+#pragma pack(pop)
+
 
 CWebSocket::CWebSocket(IWebSocketHandler *handler, event_base *base, evdns_base *dnsBase) {
     mHandler = handler;
@@ -23,7 +42,7 @@ bool CWebSocket::connect(const char *url) {
 
     const char *scheme = evhttp_uri_get_scheme(uri);
 
-    if (!scheme || (strcasecmp(scheme, "https") != 0 && strcasecmp(scheme, "http") != 0)) {
+    if (!scheme || (strcasecmp(scheme, "wss") != 0 && strcasecmp(scheme, "ws") != 0)) {
         evhttp_uri_free(uri);
         return false;
     }
@@ -38,7 +57,7 @@ bool CWebSocket::connect(const char *url) {
     int port = evhttp_uri_get_port(uri);
 
     if (port == -1) {
-        port = (strcasecmp(scheme, "http") == 0) ? 80 : 443;
+        port = (strcasecmp(scheme, "ws") == 0) ? 80 : 443;
     }
 
     const char *path = evhttp_uri_get_path(uri);
@@ -58,7 +77,7 @@ bool CWebSocket::connect(const char *url) {
 
     struct stub {
         static void onRead(bufferevent *bev, void *ctx) {
-            static_cast<CWebSocket *>(ctx)->onHandshake(bev);
+            static_cast<CWebSocket *>(ctx)->onStatus(bev);
         }
 
         static void onWrite(bufferevent *bev, void *ctx) {
@@ -109,13 +128,99 @@ void CWebSocket::onBufferRead(bufferevent *bev) {
     evbuffer *input = bufferevent_get_input(bev);
 
     while (true) {
-        if (evbuffer_get_length(input) < 2)
-            return;
+        CHeader header = {};
 
-        char data[2] = {};
-
-        if (evbuffer_copyout(input, data, sizeof(data)) != sizeof(data))
+        if (evbuffer_copyout(input, &header, sizeof(CHeader)) != sizeof(CHeader))
             break;
+
+        if (header.mask) {
+            disconnect();
+            break;
+        }
+
+        unsigned long extended = 0;
+        unsigned long length = header.length;
+
+        if (length >= TWO_BYTE_PAYLOAD_LENGTH) {
+            extended = length == EIGHT_BYTE_PAYLOAD_LENGTH ? 8 : 2;
+
+            evbuffer_ptr pos = {};
+
+            if (evbuffer_ptr_set(input, &pos, sizeof(CHeader), EVBUFFER_PTR_SET) != 0) {
+                disconnect();
+                break;
+            }
+
+            std::unique_ptr<unsigned char> value(new unsigned char[extended]());
+
+            if (evbuffer_copyout_from(input, &pos, value.get(), extended) != extended)
+                break;
+
+            length = extended == 2 ? ntohs(*(uint16_t *)value.get()) : be64toh(*(uint64_t *)value.get());
+        }
+
+        if (evbuffer_get_length(input) < sizeof(CHeader) + extended + length)
+            break;
+
+        std::unique_ptr<unsigned char> buffer(new unsigned char[length]());
+
+        if (evbuffer_drain(input, sizeof(CHeader) + extended) != 0 || evbuffer_remove(input, buffer.get(), length) != length) {
+            LOG_ERROR("read buffer failed: %s", evutil_socket_error_to_string(EVUTIL_SOCKET_ERROR()));
+            disconnect();
+            break;
+        }
+
+        if (!header.final && header.opcode != CONTINUATION) {
+            mFragmentOpcode = (emOpcode)header.opcode;
+            mFragments.insert(mFragments.end(), buffer.get(), buffer.get() + length);
+            break;
+        }
+
+        if (header.final && header.opcode == CONTINUATION) {
+            header.opcode = mFragmentOpcode;
+            mFragments.insert(mFragments.end(), buffer.get(), buffer.get() + length);
+
+            unsigned long size = mFragments.size();
+            buffer = std::make_unique<unsigned char>(size);
+
+            memcpy(buffer.get(), mFragments.data(), size);
+            mFragments.clear();
+        }
+
+        switch ((emOpcode)header.opcode) {
+            case CONTINUATION:
+                mFragments.insert(mFragments.end(), buffer.get(), buffer.get() + length);
+                break;
+
+            case TEXT:
+                mHandler->onTextMessage(this, {(const char *)buffer.get(), length});
+                break;
+
+            case BINARY:
+                mHandler->onBinaryMessage(this, buffer.get(), length);
+                break;
+
+            case CLOSE:
+                mHandler->onClose(
+                        this,
+                        *(unsigned short *)buffer.get(),
+                        {
+                            (const char *)buffer.get() + sizeof(unsigned short),
+                            length - sizeof(unsigned short)
+                        });
+                break;
+
+            case PING:
+                mHandler->onPing(this, buffer.get(), length);
+                break;
+
+            case PONG:
+                mHandler->onPong(this, buffer.get(), length);
+                break;
+
+            default:
+                break;
+        }
     }
 }
 
@@ -155,7 +260,7 @@ void CWebSocket::handshake() {
     evbuffer_add_printf(output, "\r\n");
 }
 
-void CWebSocket::onHandshake(bufferevent *bev) {
+void CWebSocket::onStatus(bufferevent *bev) {
     evbuffer *input = bufferevent_get_input(bev);
 
     char *ptr = evbuffer_readln(input, nullptr, EVBUFFER_EOL_CRLF);
@@ -189,15 +294,15 @@ void CWebSocket::onHandshake(bufferevent *bev) {
 
     struct stub {
         static void onRead(bufferevent *bev, void *ctx) {
-            static_cast<CWebSocket *>(ctx)->onChallenge(bev);
+            static_cast<CWebSocket *>(ctx)->onResponse(bev);
         }
     };
 
     setReadCallback(stub::onRead);
-    onChallenge(bev);
+    onResponse(bev);
 }
 
-void CWebSocket::onChallenge(bufferevent *bev) {
+void CWebSocket::onResponse(bufferevent *bev) {
     evbuffer *input = bufferevent_get_input(bev);
 
     while (true) {
@@ -233,8 +338,7 @@ void CWebSocket::onChallenge(bufferevent *bev) {
 
             LOG_INFO("websocket connected");
 
-            if (mHandler)
-                mHandler->onConnect();
+            mHandler->onConnected(this);
 
             struct stub {
                 static void onRead(bufferevent *bev, void *ctx) {
@@ -269,4 +373,24 @@ void CWebSocket::setReadCallback(bufferevent_data_cb cb) {
 
     bufferevent_getcb(mBev, nullptr, &wcb, &ecb, &context);
     bufferevent_setcb(mBev, cb, wcb, ecb, context);
+}
+
+void CWebSocket::sendText(const std::string &message) {
+
+}
+
+void CWebSocket::sendBinary(const unsigned char *buffer, unsigned long length) {
+
+}
+
+void CWebSocket::ping(const unsigned char *buffer, unsigned long length) {
+
+}
+
+void CWebSocket::pong(const unsigned char *buffer, unsigned long length) {
+
+}
+
+void CWebSocket::sendFrame(emOpcode opcode, const unsigned char *buffer, unsigned long length) {
+
 }

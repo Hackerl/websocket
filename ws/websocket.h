@@ -3,15 +3,44 @@
 
 #include <event.h>
 #include <map>
+#include <vector>
 #include <string>
 #include <common/interface.h>
 
-class IWebSocketHandler {
-public:
-    virtual void onConnect() = 0;
+enum emOpcode : unsigned int {
+    CONTINUATION = 0,
+    TEXT = 1,
+    BINARY = 2,
+    CLOSE = 8,
+    PING = 9,
+    PONG = 10
 };
 
-class CWebSocket {
+class IWebSocket : public Interface {
+public:
+    virtual void sendText(const std::string &message) = 0;
+    virtual void sendBinary(const unsigned char *buffer, unsigned long length) = 0;
+
+public:
+    virtual void ping(const unsigned char *buffer, unsigned long length) = 0;
+    virtual void pong(const unsigned char *buffer, unsigned long length) = 0;
+};
+
+class IWebSocketHandler : public Interface {
+public:
+    virtual void onConnected(IWebSocket *ws) = 0;
+    virtual void onClose(IWebSocket *ws, unsigned short code, const std::string &reason) = 0;
+
+public:
+    virtual void onTextMessage(IWebSocket *ws, const std::string& message) = 0;
+    virtual void onBinaryMessage(IWebSocket *ws, const unsigned char *buffer, unsigned long length) = 0;
+
+public:
+    virtual void onPing(IWebSocket *ws, const unsigned char *buffer, unsigned long length) = 0;
+    virtual void onPong(IWebSocket *ws, const unsigned char *buffer, unsigned long length) = 0;
+};
+
+class CWebSocket : public IWebSocket {
 public:
     explicit CWebSocket(IWebSocketHandler *handler, event_base *base, evdns_base *dnsBase = nullptr);
 
@@ -25,8 +54,19 @@ public:
     void onBufferEvent(bufferevent *bev, short what);
 
 public:
-    void onHandshake(bufferevent *bev);
-    void onChallenge(bufferevent *bev);
+    void onStatus(bufferevent *bev);
+    void onResponse(bufferevent *bev);
+
+public:
+    void sendText(const std::string &message) override;
+    void sendBinary(const unsigned char *buffer, unsigned long length) override;
+
+public:
+    void ping(const unsigned char *buffer, unsigned long length) override;
+    void pong(const unsigned char *buffer, unsigned long length) override;
+
+private:
+    void sendFrame(emOpcode opcode, const unsigned char *buffer, unsigned long length);
 
 private:
     void handshake();
@@ -37,6 +77,10 @@ private:
 public:
     int mResponseCode{};
     std::map<std::string, std::string> mResponseHeaders;
+
+private:
+    emOpcode mFragmentOpcode{};
+    std::vector<unsigned char> mFragments;
 
 private:
     int mPort{};
