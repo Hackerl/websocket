@@ -4,6 +4,7 @@ project(websocket)
 set(CMAKE_CXX_STANDARD 14)
 
 include_directories(include)
+include_directories(${CMAKE_SOURCE_DIR})
 
 option(STATIC_BUILD "enable static build" OFF)
 
@@ -18,5 +19,5 @@ set(EVENT__DISABLE_BENCHMARK ON CACHE BOOL "disable event benchmark")
 include(FindOpenSSL)
 include(cmake/libevent.cmake)
 
-add_executable(websocket main.cpp ws/websocket.cpp)
+add_executable(websocket main.cpp ws/websocket.cpp client/echo_client.cpp)
 target_link_libraries(websocket event_core_static event_extra_static OpenSSL::Crypto $<$<BOOL:${STATIC_BUILD}>:-static-pie>)

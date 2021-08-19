@@ -8,7 +8,7 @@
 #include <common/interface.h>
 #include <common/utils/random.h>
 
-enum emWebSocketState {
+enum emWebSocketState : unsigned int {
     CONNECTING,
     OPEN,
     CLOSING,
