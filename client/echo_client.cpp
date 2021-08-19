@@ -1,8 +1,22 @@
 #include "echo_client.h"
 #include <common/log.h>
+#include <event2/dns.h>
 
-CEchoClient::CEchoClient(event_base *base, evdns_base *dnsBase) : mWebSocket(this, base, dnsBase) {
-    mBase = base;
+CEchoClient::CEchoClient() {
+    mBase = event_base_new();
+    mDnsBase = evdns_base_new(mBase, EVDNS_BASE_INITIALIZE_NAMESERVERS);
+}
+
+CEchoClient::~CEchoClient() {
+    if (mBase) {
+        event_base_free(mBase);
+        mBase = nullptr;
+    }
+
+    if (mDnsBase) {
+        evdns_base_free(mDnsBase, 0);
+        mDnsBase = nullptr;
+    }
 }
 
 void CEchoClient::onConnected(IWebSocket *ws) {
@@ -38,6 +52,15 @@ void CEchoClient::onPong(IWebSocket *ws, const unsigned char *buffer, unsigned l
     LOG_INFO("websocket pong message: %s", CBinascii::hexlify(buffer, length).c_str());
 }
 
-bool CEchoClient::connect(const char *url) {
-    return mWebSocket.connect(url);
+bool CEchoClient::start(const std::string &url) {
+    CWebSocket webSocket(this, mBase, mDnsBase);
+
+    if (!webSocket.connect(url.c_str())) {
+        LOG_ERROR("connect failed");
+        return false;
+    }
+
+    event_base_dispatch(mBase);
+
+    return true;
 }

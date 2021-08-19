@@ -1,7 +1,6 @@
 #include "client/echo_client.h"
 #include <common/log.h>
 #include <common/cmdline.h>
-#include <event2/dns.h>
 
 int main(int argc, char ** argv) {
     cmdline::parser parse;
@@ -11,22 +10,12 @@ int main(int argc, char ** argv) {
 
     INIT_CONSOLE_LOG(INFO);
 
-    event_base *base = event_base_new();
-    evdns_base *dnsBase = evdns_base_new(base, EVDNS_BASE_INITIALIZE_NAMESERVERS);
-
     std::string url = parse.get<std::string>("url");
 
-    CEchoClient client(base, dnsBase);
+    CEchoClient client;
 
-    if (!client.connect(url.c_str())) {
-        LOG_ERROR("connect failed: %s", url.c_str());
+    if (!client.start(url))
         return -1;
-    }
-
-    event_base_dispatch(base);
-
-    event_base_free(base);
-    evdns_base_free(dnsBase, 0);
 
     return 0;
 }
