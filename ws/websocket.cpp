@@ -468,11 +468,11 @@ bool CWebSocket::sendFrame(emWebSocketOpcode opcode, const unsigned char *buffer
         return false;
     }
 
-    CHeader header = {
-            .opcode = opcode,
-            .final = 1,
-            .mask = 1
-    };
+    CHeader header = {};
+
+    header.opcode = opcode;
+    header.final = 1;
+    header.mask = 1;
 
     unsigned long extendedBytes = 0;
     std::unique_ptr<unsigned char> extended;
