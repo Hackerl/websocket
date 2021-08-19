@@ -6,8 +6,16 @@
 #include <vector>
 #include <string>
 #include <common/interface.h>
+#include <common/utils/random.h>
 
-enum emOpcode : unsigned int {
+enum emWebSocketState {
+    CONNECTING,
+    OPEN,
+    CLOSING,
+    CLOSED
+};
+
+enum emWebSocketOpcode : unsigned int {
     CONTINUATION = 0,
     TEXT = 1,
     BINARY = 2,
@@ -18,22 +26,26 @@ enum emOpcode : unsigned int {
 
 class IWebSocket : public Interface {
 public:
-    virtual void sendText(const std::string &message) = 0;
-    virtual void sendBinary(const unsigned char *buffer, unsigned long length) = 0;
+    virtual bool sendText(const std::string &message) = 0;
+    virtual bool sendBinary(const unsigned char *buffer, unsigned long length) = 0;
 
 public:
-    virtual void ping(const unsigned char *buffer, unsigned long length) = 0;
-    virtual void pong(const unsigned char *buffer, unsigned long length) = 0;
+    virtual bool close(unsigned short code, const std::string &reason) = 0;
+
+public:
+    virtual bool ping(const unsigned char *buffer, unsigned long length) = 0;
+    virtual bool pong(const unsigned char *buffer, unsigned long length) = 0;
 };
 
 class IWebSocketHandler : public Interface {
 public:
     virtual void onConnected(IWebSocket *ws) = 0;
     virtual void onClose(IWebSocket *ws, unsigned short code, const std::string &reason) = 0;
+    virtual void onClosed() = 0;
 
 public:
-    virtual void onTextMessage(IWebSocket *ws, const std::string& message) = 0;
-    virtual void onBinaryMessage(IWebSocket *ws, const unsigned char *buffer, unsigned long length) = 0;
+    virtual void onText(IWebSocket *ws, const std::string& message) = 0;
+    virtual void onBinary(IWebSocket *ws, const unsigned char *buffer, unsigned long length) = 0;
 
 public:
     virtual void onPing(IWebSocket *ws, const unsigned char *buffer, unsigned long length) = 0;
@@ -43,6 +55,7 @@ public:
 class CWebSocket : public IWebSocket {
 public:
     explicit CWebSocket(IWebSocketHandler *handler, event_base *base, evdns_base *dnsBase = nullptr);
+    ~CWebSocket() override;
 
 public:
     bool connect(const char *url);
@@ -58,15 +71,18 @@ public:
     void onResponse(bufferevent *bev);
 
 public:
-    void sendText(const std::string &message) override;
-    void sendBinary(const unsigned char *buffer, unsigned long length) override;
+    bool sendText(const std::string &message) override;
+    bool sendBinary(const unsigned char *buffer, unsigned long length) override;
 
 public:
-    void ping(const unsigned char *buffer, unsigned long length) override;
-    void pong(const unsigned char *buffer, unsigned long length) override;
+    bool close(unsigned short code, const std::string &reason) override;
+
+public:
+    bool ping(const unsigned char *buffer, unsigned long length) override;
+    bool pong(const unsigned char *buffer, unsigned long length) override;
 
 private:
-    void sendFrame(emOpcode opcode, const unsigned char *buffer, unsigned long length);
+    bool sendFrame(emWebSocketOpcode opcode, const unsigned char *buffer, unsigned long length);
 
 private:
     void handshake();
@@ -78,8 +94,11 @@ public:
     int mResponseCode{};
     std::map<std::string, std::string> mResponseHeaders;
 
+public:
+    emWebSocketState mState{};
+
 private:
-    emOpcode mFragmentOpcode{};
+    emWebSocketOpcode mFragmentOpcode{};
     std::vector<unsigned char> mFragments;
 
 private:
@@ -93,6 +112,7 @@ private:
     IWebSocketHandler *mHandler;
 
 private:
+    CRandom mRandom;
     bufferevent *mBev{};
     evdns_base *mDnsBase;
     event_base *mEventBase;

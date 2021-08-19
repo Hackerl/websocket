@@ -1,14 +1,18 @@
 #include "websocket.h"
 #include <event2/http.h>
 #include <cstring>
-#include <memory>
 #include <common/log.h>
-#include <common/utils/random.h>
 #include <common/utils/base64.h>
 #include <openssl/sha.h>
 
+constexpr auto SWITCHING_PROTOCOLS_STATUS = 101;
+constexpr auto MASKING_KEY_LENGTH = 4;
+
 constexpr auto TWO_BYTE_PAYLOAD_LENGTH = 126U;
 constexpr auto EIGHT_BYTE_PAYLOAD_LENGTH = 127U;
+
+constexpr auto MAX_SINGLE_BYTE_PAYLOAD_LENGTH = 125U;
+constexpr auto MAX_TWO_BYTE_PAYLOAD_LENGTH = UINT16_MAX;
 
 constexpr auto MAGIC = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 
@@ -31,6 +35,13 @@ CWebSocket::CWebSocket(IWebSocketHandler *handler, event_base *base, evdns_base 
     mHandler = handler;
     mEventBase = base;
     mDnsBase = dnsBase;
+}
+
+CWebSocket::~CWebSocket() {
+    if (mBev) {
+        bufferevent_free(mBev);
+        mBev = nullptr;
+    }
 }
 
 bool CWebSocket::connect(const char *url) {
@@ -112,6 +123,8 @@ bool CWebSocket::connect(const char *url) {
         return false;
     }
 
+    mState = CONNECTING;
+
     return true;
 }
 
@@ -122,6 +135,8 @@ void CWebSocket::disconnect() {
         bufferevent_free(mBev);
         mBev = nullptr;
     }
+
+    mHandler->onClosed();
 }
 
 void CWebSocket::onBufferRead(bufferevent *bev) {
@@ -134,15 +149,17 @@ void CWebSocket::onBufferRead(bufferevent *bev) {
             break;
 
         if (header.mask) {
+            LOG_ERROR("masked server frame not supported");
+
             disconnect();
             break;
         }
 
-        unsigned long extended = 0;
+        unsigned long extendedBytes = 0;
         unsigned long length = header.length;
 
         if (length >= TWO_BYTE_PAYLOAD_LENGTH) {
-            extended = length == EIGHT_BYTE_PAYLOAD_LENGTH ? 8 : 2;
+            extendedBytes = length == EIGHT_BYTE_PAYLOAD_LENGTH ? 8 : 2;
 
             evbuffer_ptr pos = {};
 
@@ -151,27 +168,27 @@ void CWebSocket::onBufferRead(bufferevent *bev) {
                 break;
             }
 
-            std::unique_ptr<unsigned char> value(new unsigned char[extended]());
+            std::unique_ptr<unsigned char> extended(new unsigned char[extendedBytes]());
 
-            if (evbuffer_copyout_from(input, &pos, value.get(), extended) != extended)
+            if (evbuffer_copyout_from(input, &pos, extended.get(), extendedBytes) != extendedBytes)
                 break;
 
-            length = extended == 2 ? ntohs(*(uint16_t *)value.get()) : be64toh(*(uint64_t *)value.get());
+            length = extendedBytes == 2 ? ntohs(*(uint16_t *)extended.get()) : be64toh(*(uint64_t *)extended.get());
         }
 
-        if (evbuffer_get_length(input) < sizeof(CHeader) + extended + length)
+        if (evbuffer_get_length(input) < sizeof(CHeader) + extendedBytes + length)
             break;
 
         std::unique_ptr<unsigned char> buffer(new unsigned char[length]());
 
-        if (evbuffer_drain(input, sizeof(CHeader) + extended) != 0 || evbuffer_remove(input, buffer.get(), length) != length) {
+        if (evbuffer_drain(input, sizeof(CHeader) + extendedBytes) != 0 || evbuffer_remove(input, buffer.get(), length) != length) {
             LOG_ERROR("read buffer failed: %s", evutil_socket_error_to_string(EVUTIL_SOCKET_ERROR()));
             disconnect();
             break;
         }
 
         if (!header.final && header.opcode != CONTINUATION) {
-            mFragmentOpcode = (emOpcode)header.opcode;
+            mFragmentOpcode = (emWebSocketOpcode)header.opcode;
             mFragments.insert(mFragments.end(), buffer.get(), buffer.get() + length);
             break;
         }
@@ -187,20 +204,28 @@ void CWebSocket::onBufferRead(bufferevent *bev) {
             mFragments.clear();
         }
 
-        switch ((emOpcode)header.opcode) {
+        switch ((emWebSocketOpcode)header.opcode) {
             case CONTINUATION:
                 mFragments.insert(mFragments.end(), buffer.get(), buffer.get() + length);
                 break;
 
             case TEXT:
-                mHandler->onTextMessage(this, {(const char *)buffer.get(), length});
+                mHandler->onText(this, {(const char *) buffer.get(), length});
                 break;
 
             case BINARY:
-                mHandler->onBinaryMessage(this, buffer.get(), length);
+                mHandler->onBinary(this, buffer.get(), length);
                 break;
 
             case CLOSE:
+                if (mState == OPEN) {
+                    mState = CLOSING;
+                } else if (mState == CLOSING) {
+                    mState = CLOSED;
+                    disconnect();
+                    break;
+                }
+
                 mHandler->onClose(
                         this,
                         *(unsigned short *)buffer.get(),
@@ -208,6 +233,7 @@ void CWebSocket::onBufferRead(bufferevent *bev) {
                             (const char *)buffer.get() + sizeof(unsigned short),
                             length - sizeof(unsigned short)
                         });
+
                 break;
 
             case PING:
@@ -245,7 +271,7 @@ void CWebSocket::handshake() {
 
     char buffer[16] = {};
 
-    CRandom().fill(buffer, sizeof(buffer));
+    mRandom.fill(buffer, sizeof(buffer));
     mKey = CBase64::encode((const unsigned char *)buffer, sizeof(buffer));
 
     evbuffer *output = bufferevent_get_output(mBev);
@@ -285,7 +311,7 @@ void CWebSocket::onStatus(bufferevent *bev) {
         return;
     }
 
-    if (mResponseCode != 101) {
+    if (mResponseCode != SWITCHING_PROTOCOLS_STATUS) {
         LOG_ERROR("bad response status code: %d", mResponseCode);
 
         disconnect();
@@ -338,6 +364,7 @@ void CWebSocket::onResponse(bufferevent *bev) {
 
             LOG_INFO("websocket connected");
 
+            mState = OPEN;
             mHandler->onConnected(this);
 
             struct stub {
@@ -375,22 +402,116 @@ void CWebSocket::setReadCallback(bufferevent_data_cb cb) {
     bufferevent_setcb(mBev, cb, wcb, ecb, context);
 }
 
-void CWebSocket::sendText(const std::string &message) {
+bool CWebSocket::sendText(const std::string &message) {
+    if (mState != OPEN) {
+        LOG_WARNING("send text frame in %u state", mState);
+        return false;
+    }
 
+    return sendFrame(TEXT, (const unsigned char *)message.data(), message.length());
 }
 
-void CWebSocket::sendBinary(const unsigned char *buffer, unsigned long length) {
+bool CWebSocket::sendBinary(const unsigned char *buffer, unsigned long length) {
+    if (mState != OPEN) {
+        LOG_WARNING("send binary frame in %u state", mState);
+        return false;
+    }
 
+    return sendFrame(BINARY, buffer, length);
 }
 
-void CWebSocket::ping(const unsigned char *buffer, unsigned long length) {
+bool CWebSocket::close(unsigned short code, const std::string &reason) {
+    switch (mState) {
+        case OPEN:
+            mState = CLOSING;
+            break;
 
+        case CLOSING:
+            mState = CLOSED;
+            break;
+
+        default:
+            LOG_WARNING("send close frame in %u state", mState);
+            return false;
+    }
+
+    unsigned long length = sizeof(unsigned short) + reason.length();
+    std::unique_ptr<unsigned char> buffer(new unsigned char[length]());
+
+    memcpy(buffer.get(), &code, sizeof(unsigned short));
+    memcpy(buffer.get(), reason.data(), reason.length());
+
+    return sendFrame(CLOSE, buffer.get(), length);
 }
 
-void CWebSocket::pong(const unsigned char *buffer, unsigned long length) {
+bool CWebSocket::ping(const unsigned char *buffer, unsigned long length) {
+    if (mState != OPEN) {
+        LOG_WARNING("send ping frame in %u state", mState);
+        return false;
+    }
 
+    return sendFrame(PING, buffer, length);
 }
 
-void CWebSocket::sendFrame(emOpcode opcode, const unsigned char *buffer, unsigned long length) {
+bool CWebSocket::pong(const unsigned char *buffer, unsigned long length) {
+    if (mState != OPEN) {
+        LOG_WARNING("send pong frame in %u state", mState);
+        return false;
+    }
 
+    return sendFrame(PONG, buffer, length);
+}
+
+bool CWebSocket::sendFrame(emWebSocketOpcode opcode, const unsigned char *buffer, unsigned long length) {
+    if (!mBev) {
+        LOG_WARNING("buffer event has been destroyed");
+        return false;
+    }
+
+    CHeader header = {
+            .opcode = opcode,
+            .final = 1,
+            .mask = 1
+    };
+
+    unsigned long extendedBytes = 0;
+    std::unique_ptr<unsigned char> extended;
+
+    if (length > MAX_TWO_BYTE_PAYLOAD_LENGTH) {
+        extendedBytes = 8;
+        header.length = EIGHT_BYTE_PAYLOAD_LENGTH;
+
+        uint64_t extendedLength = htobe64(length);
+        extended = std::make_unique<unsigned char>(extendedBytes);
+
+        memcpy(extended.get(), &extendedLength, sizeof(uint64_t));
+    } else if (length > MAX_SINGLE_BYTE_PAYLOAD_LENGTH) {
+        extendedBytes = 2;
+        header.length = TWO_BYTE_PAYLOAD_LENGTH;
+
+        uint16_t extendedLength = htons(length);
+        extended = std::make_unique<unsigned char>(extendedBytes);
+
+        memcpy(extended.get(), &extendedLength, sizeof(uint16_t));
+    } else {
+        header.length = length;
+    }
+
+    bufferevent_write(mBev, &header, sizeof(CHeader));
+
+    if (extendedBytes) {
+        bufferevent_write(mBev, extended.get(), extendedBytes);
+    }
+
+    unsigned char maskingKey[MASKING_KEY_LENGTH] = {};
+    mRandom.fill((char *)maskingKey, MASKING_KEY_LENGTH);
+
+    bufferevent_write(mBev, maskingKey, MASKING_KEY_LENGTH);
+
+    for (unsigned long i = 0; i < length; i++) {
+        unsigned char c = buffer[i] ^ maskingKey[i % 4];
+        bufferevent_write(mBev, &c, 1);
+    }
+
+    return true;
 }
