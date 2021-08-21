@@ -1,7 +1,7 @@
 #include "echo_client.h"
 #include <common/log.h>
 
-CEchoClient::CEchoClient(event_base *base, evdns_base *dnsBase) : mWebSocket(this, base, dnsBase) {
+CEchoClient::CEchoClient(event_base *base, evdns_base *dnsBase, SSL_CTX *ctx) : mWebSocket(this, base, dnsBase, ctx) {
 
 }
 

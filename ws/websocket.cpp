@@ -1,9 +1,11 @@
 #include "websocket.h"
 #include <event2/http.h>
+#include <event2/bufferevent_ssl.h>
 #include <cstring>
 #include <common/log.h>
 #include <common/utils/base64.h>
-#include <openssl/sha.h>
+#include <openssl/err.h>
+#include <openssl/x509v3.h>
 
 constexpr auto SWITCHING_PROTOCOLS_STATUS = 101;
 constexpr auto MASKING_KEY_LENGTH = 4;
@@ -14,7 +16,9 @@ constexpr auto EIGHT_BYTE_PAYLOAD_LENGTH = 127U;
 constexpr auto MAX_SINGLE_BYTE_PAYLOAD_LENGTH = 125U;
 constexpr auto MAX_TWO_BYTE_PAYLOAD_LENGTH = UINT16_MAX;
 
-constexpr auto MAGIC = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
+constexpr auto WEBSOCKET_SCHEME = "ws";
+constexpr auto WEBSOCKET_SECURE_SCHEME = "wss";
+constexpr auto WEBSOCKET_MAGIC = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 
 #pragma pack(push, 1)
 
@@ -31,10 +35,11 @@ struct CHeader {
 #pragma pack(pop)
 
 
-CWebSocket::CWebSocket(IWebSocketHandler *handler, event_base *base, evdns_base *dnsBase) {
+CWebSocket::CWebSocket(IWebSocketHandler *handler, event_base *base, evdns_base *dnsBase, SSL_CTX *ctx) {
     mHandler = handler;
     mEventBase = base;
     mDnsBase = dnsBase;
+    mSSLContext = ctx;
 }
 
 CWebSocket::~CWebSocket() {
@@ -53,7 +58,7 @@ bool CWebSocket::connect(const char *url) {
 
     const char *scheme = evhttp_uri_get_scheme(uri);
 
-    if (!scheme || (strcasecmp(scheme, "wss") != 0 && strcasecmp(scheme, "ws") != 0)) {
+    if (!scheme || (strcasecmp(scheme, WEBSOCKET_SCHEME) != 0 && strcasecmp(scheme, WEBSOCKET_SECURE_SCHEME) != 0)) {
         evhttp_uri_free(uri);
         return false;
     }
@@ -68,7 +73,7 @@ bool CWebSocket::connect(const char *url) {
     int port = evhttp_uri_get_port(uri);
 
     if (port == -1) {
-        port = (strcasecmp(scheme, "ws") == 0) ? 80 : 443;
+        port = (strcasecmp(scheme, WEBSOCKET_SCHEME) == 0) ? 80 : 443;
     }
 
     const char *path = evhttp_uri_get_path(uri);
@@ -100,10 +105,37 @@ bool CWebSocket::connect(const char *url) {
         }
     };
 
-    mBev = bufferevent_socket_new(mEventBase, -1, BEV_OPT_CLOSE_ON_FREE);
+    if (mScheme == WEBSOCKET_SCHEME) {
+        mBev = bufferevent_socket_new(mEventBase, -1, BEV_OPT_CLOSE_ON_FREE);
+    } else {
+        SSL *ssl = SSL_new(mSSLContext);
+
+        if (!ssl) {
+            LOG_ERROR("new ssl failed: %s", ERR_error_string(ERR_get_error(), nullptr));
+            return false;
+        }
+
+        SSL_set_hostflags(ssl, X509_CHECK_FLAG_NO_PARTIAL_WILDCARDS);
+
+        if (!SSL_set1_host(ssl, mHost.c_str())) {
+            LOG_ERROR("set ssl hostname failed: %s", ERR_error_string(ERR_get_error(), nullptr));
+            SSL_free(ssl);
+            return false;
+        }
+
+        SSL_set_verify(ssl, SSL_VERIFY_PEER, nullptr);
+
+        mBev = bufferevent_openssl_socket_new(
+                mEventBase,
+                -1,
+                ssl,
+                BUFFEREVENT_SSL_CONNECTING,
+                BEV_OPT_CLOSE_ON_FREE
+                );
+    }
 
     if (!mBev) {
-        LOG_ERROR("new buffer failed");
+        LOG_ERROR("new buffer event failed");
         return false;
     }
 
@@ -344,7 +376,7 @@ void CWebSocket::onResponse(bufferevent *bev) {
                 break;
             }
 
-            std::string data = mKey + MAGIC;
+            std::string data = mKey + WEBSOCKET_MAGIC;
             unsigned char digest[SHA_DIGEST_LENGTH] = {};
 
             SHA1((const unsigned char *)data.data(), data.size(), digest);

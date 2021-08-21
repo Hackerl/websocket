@@ -7,6 +7,7 @@
 #include <string>
 #include <common/interface.h>
 #include <common/utils/random.h>
+#include <openssl/ssl.h>
 
 enum emWebSocketState : unsigned int {
     CONNECTING,
@@ -54,7 +55,7 @@ public:
 
 class CWebSocket : public IWebSocket {
 public:
-    explicit CWebSocket(IWebSocketHandler *handler, event_base *base, evdns_base *dnsBase = nullptr);
+    explicit CWebSocket(IWebSocketHandler *handler, event_base *base, evdns_base *dnsBase, SSL_CTX *ctx);
     ~CWebSocket() override;
 
 public:
@@ -109,13 +110,16 @@ private:
     std::string mKey;
 
 private:
-    IWebSocketHandler *mHandler;
+    CRandom mRandom;
 
 private:
-    CRandom mRandom;
     bufferevent *mBev{};
+
+private:
     evdns_base *mDnsBase;
     event_base *mEventBase;
+    SSL_CTX *mSSLContext;
+    IWebSocketHandler *mHandler;
 };
 
 

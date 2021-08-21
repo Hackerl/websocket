@@ -5,7 +5,7 @@
 
 class CEchoClient : public IWebSocketHandler {
 public:
-    explicit CEchoClient(event_base *base, evdns_base *dnsBase);
+    explicit CEchoClient(event_base *base, evdns_base *dnsBase, SSL_CTX *ctx);
 
 public:
     void onConnected(IWebSocket *ws) override;

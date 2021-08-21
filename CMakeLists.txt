@@ -13,11 +13,10 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_SOURCE_DIR}/bin)
 
 set(EVENT__DISABLE_TESTS ON CACHE BOOL "disable event tests")
 set(EVENT__DISABLE_SAMPLES ON CACHE BOOL "disable event samples")
-set(EVENT__DISABLE_OPENSSL ON CACHE BOOL "disable event openssl")
 set(EVENT__DISABLE_BENCHMARK ON CACHE BOOL "disable event benchmark")
 
 include(FindOpenSSL)
 include(cmake/libevent.cmake)
 
 add_executable(websocket main.cpp ws/websocket.cpp client/echo_client.cpp)
-target_link_libraries(websocket event_core_static event_extra_static OpenSSL::Crypto $<$<BOOL:${STATIC_BUILD}>:-static-pie>)
+target_link_libraries(websocket event_core_static event_openssl_static event_extra_static OpenSSL::SSL OpenSSL::Crypto $<$<BOOL:${STATIC_BUILD}>:-static-pie>)
