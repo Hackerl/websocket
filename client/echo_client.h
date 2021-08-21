@@ -5,8 +5,7 @@
 
 class CEchoClient : public IWebSocketHandler {
 public:
-    explicit CEchoClient();
-    ~CEchoClient() override;
+    explicit CEchoClient(event_base *base, evdns_base *dnsBase);
 
 public:
     void onConnected(IWebSocket *ws) override;
@@ -25,8 +24,7 @@ public:
     bool start(const std::string &url);
 
 private:
-    event_base *mBase;
-    evdns_base *mDnsBase;
+    CWebSocket mWebSocket;
 };
 
 

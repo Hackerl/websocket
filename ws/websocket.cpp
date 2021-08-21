@@ -111,14 +111,12 @@ bool CWebSocket::connect(const char *url) {
 
     if (bufferevent_enable(mBev, EV_READ | EV_WRITE) != 0) {
         LOG_ERROR("enable buffer failed");
-
         disconnect();
         return false;
     }
 
     if (bufferevent_socket_connect_hostname(mBev, mDnsBase, AF_UNSPEC, mHost.c_str(), mPort) != 0) {
         LOG_ERROR("connect failed: %s[%d]", mHost.c_str(), mPort);
-
         disconnect();
         return false;
     }
@@ -136,6 +134,7 @@ void CWebSocket::disconnect() {
         mBev = nullptr;
     }
 
+    mFragments.clear();
     mHandler->onClosed();
 }
 
@@ -150,7 +149,6 @@ void CWebSocket::onBufferRead(bufferevent *bev) {
 
         if (header.mask) {
             LOG_ERROR("masked server frame not supported");
-
             disconnect();
             break;
         }
@@ -299,21 +297,18 @@ void CWebSocket::onStatus(bufferevent *bev) {
 
     if (tokens.size() < 2) {
         LOG_ERROR("bad response: %s", line.get());
-
         disconnect();
         return;
     }
 
     if (!CStringHelper::toNumber(tokens[1], mResponseCode)) {
         LOG_ERROR("parse status code failed: %s", tokens[1].c_str());
-
         disconnect();
         return;
     }
 
     if (mResponseCode != SWITCHING_PROTOCOLS_STATUS) {
         LOG_ERROR("bad response status code: %d", mResponseCode);
-
         disconnect();
         return;
     }
@@ -357,12 +352,11 @@ void CWebSocket::onResponse(bufferevent *bev) {
 
             if (it->second != hash) {
                 LOG_ERROR("websocket hash error");
-
                 disconnect();
                 break;
             }
 
-            LOG_INFO("websocket connected");
+            LOG_INFO("websocket opened");
 
             mState = OPEN;
             mHandler->onConnected(this);
@@ -383,7 +377,6 @@ void CWebSocket::onResponse(bufferevent *bev) {
 
         if (tokens.size() < 2) {
             LOG_ERROR("bad header: %s", line.get());
-
             disconnect();
             break;
         }

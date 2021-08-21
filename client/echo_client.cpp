@@ -1,22 +1,8 @@
 #include "echo_client.h"
 #include <common/log.h>
-#include <event2/dns.h>
 
-CEchoClient::CEchoClient() {
-    mBase = event_base_new();
-    mDnsBase = evdns_base_new(mBase, EVDNS_BASE_INITIALIZE_NAMESERVERS);
-}
+CEchoClient::CEchoClient(event_base *base, evdns_base *dnsBase) : mWebSocket(this, base, dnsBase) {
 
-CEchoClient::~CEchoClient() {
-    if (mBase) {
-        event_base_free(mBase);
-        mBase = nullptr;
-    }
-
-    if (mDnsBase) {
-        evdns_base_free(mDnsBase, 0);
-        mDnsBase = nullptr;
-    }
 }
 
 void CEchoClient::onConnected(IWebSocket *ws) {
@@ -24,13 +10,12 @@ void CEchoClient::onConnected(IWebSocket *ws) {
 }
 
 void CEchoClient::onClose(IWebSocket *ws, unsigned short code, const std::string &reason) {
-    LOG_INFO("websocket close message: %%hu %s", code, reason.c_str());
+    LOG_INFO("websocket close message: %hu %s", code, reason.c_str());
     ws->close(code, reason);
 }
 
 void CEchoClient::onClosed() {
     LOG_INFO("websocket closed");
-    event_base_loopbreak(mBase);
 }
 
 void CEchoClient::onText(IWebSocket *ws, const std::string &message) {
@@ -53,14 +38,10 @@ void CEchoClient::onPong(IWebSocket *ws, const unsigned char *buffer, unsigned l
 }
 
 bool CEchoClient::start(const std::string &url) {
-    CWebSocket webSocket(this, mBase, mDnsBase);
-
-    if (!webSocket.connect(url.c_str())) {
-        LOG_ERROR("connect failed");
+    if (!mWebSocket.connect(url.c_str())) {
+        LOG_ERROR("websocket connect failed");
         return false;
     }
-
-    event_base_dispatch(mBase);
 
     return true;
 }
