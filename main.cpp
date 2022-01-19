@@ -1,16 +1,16 @@
 #include "client/echo_client.h"
-#include <common/log.h>
-#include <common/cmdline.h>
+#include <zero/log.h>
+#include <zero/cmdline.h>
 #include <event2/dns.h>
 #include <openssl/err.h>
 
 int main(int argc, char ** argv) {
-    cmdline::parser parse;
+    INIT_CONSOLE_LOG(zero::INFO);
 
-    parse.add<std::string>("url", 'u', "websocket url", true, "");
-    parse.parse_check(argc, argv);
+    zero::CCmdline cmdline;
 
-    INIT_CONSOLE_LOG(INFO);
+    cmdline.add({"url", "websocket url", zero::value<std::string>()});
+    cmdline.parse(argc, argv);
 
     SSL_CTX *ctx = SSL_CTX_new(SSLv23_method());
 
@@ -46,7 +46,7 @@ int main(int argc, char ** argv) {
         return -1;
     }
 
-    std::string url = parse.get<std::string>("url");
+    std::string url = cmdline.get<std::string>("url");
 
     CEchoClient client(base, dnsBase, ctx);
 

@@ -1,5 +1,6 @@
 #include "echo_client.h"
-#include <common/log.h>
+#include <zero/log.h>
+#include <zero/encoding/hex.h>
 
 CEchoClient::CEchoClient(event_base *base, evdns_base *dnsBase, SSL_CTX *ctx) : mWebSocket(this, base, dnsBase, ctx) {
 
@@ -24,17 +25,17 @@ void CEchoClient::onText(IWebSocket *ws, const std::string &message) {
 }
 
 void CEchoClient::onBinary(IWebSocket *ws, const unsigned char *buffer, unsigned long length) {
-    LOG_INFO("websocket binary message: %s", CBinascii::hexlify(buffer, length).c_str());
+    LOG_INFO("websocket binary message: %s", zero::encoding::hex::encode(buffer, length).c_str());
     ws->sendBinary(buffer, length);
 }
 
 void CEchoClient::onPing(IWebSocket *ws, const unsigned char *buffer, unsigned long length) {
-    LOG_INFO("websocket ping message: %s", CBinascii::hexlify(buffer, length).c_str());
+    LOG_INFO("websocket ping message: %s", zero::encoding::hex::encode(buffer, length).c_str());
     ws->pong(buffer, length);
 }
 
 void CEchoClient::onPong(IWebSocket *ws, const unsigned char *buffer, unsigned long length) {
-    LOG_INFO("websocket pong message: %s", CBinascii::hexlify(buffer, length).c_str());
+    LOG_INFO("websocket pong message: %s", zero::encoding::hex::encode(buffer, length).c_str());
 }
 
 bool CEchoClient::start(const std::string &url) {

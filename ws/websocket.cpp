@@ -2,8 +2,8 @@
 #include <event2/http.h>
 #include <event2/bufferevent_ssl.h>
 #include <cstring>
-#include <common/log.h>
-#include <common/utils/base64.h>
+#include <zero/log.h>
+#include <zero/encoding/base64.h>
 #include <openssl/err.h>
 #include <openssl/x509v3.h>
 
@@ -87,7 +87,7 @@ bool CWebSocket::connect(const char *url) {
     mHost = host;
     mPort = port;
     mScheme = scheme;
-    mUri = !query ? path : CStringHelper::format("%s?%s", path, query);
+    mUri = !query ? path : zero::strings::format("%s?%s", path, query);
 
     evhttp_uri_free(uri);
 
@@ -301,8 +301,11 @@ void CWebSocket::handshake() {
 
     char buffer[16] = {};
 
-    mRandom.fill(buffer, sizeof(buffer));
-    mKey = CBase64::encode((const unsigned char *)buffer, sizeof(buffer));
+    for (char &i : buffer) {
+        i = static_cast<char>(mRandom() & 0xff);
+    }
+
+    mKey = zero::encoding::base64::encode((const unsigned char *)buffer, sizeof(buffer));
 
     evbuffer *output = bufferevent_get_output(mBev);
 
@@ -325,7 +328,7 @@ void CWebSocket::onStatus(bufferevent *bev) {
         return;
 
     std::unique_ptr<char> line(ptr);
-    std::vector<std::string> tokens = CStringHelper::split(line.get(), ' ');
+    std::vector<std::string> tokens = zero::strings::split(line.get(), " ");
 
     if (tokens.size() < 2) {
         LOG_ERROR("bad response: %s", line.get());
@@ -333,7 +336,7 @@ void CWebSocket::onStatus(bufferevent *bev) {
         return;
     }
 
-    if (!CStringHelper::toNumber(tokens[1], mResponseCode)) {
+    if (!zero::strings::toNumber(tokens[1], mResponseCode)) {
         LOG_ERROR("parse status code failed: %s", tokens[1].c_str());
         disconnect();
         return;
@@ -380,7 +383,7 @@ void CWebSocket::onResponse(bufferevent *bev) {
             unsigned char digest[SHA_DIGEST_LENGTH] = {};
 
             SHA1((const unsigned char *)data.data(), data.size(), digest);
-            std::string hash = CBase64::encode(digest, SHA_DIGEST_LENGTH);
+            std::string hash = zero::encoding::base64::encode(digest, SHA_DIGEST_LENGTH);
 
             if (it->second != hash) {
                 LOG_ERROR("websocket hash error");
@@ -405,7 +408,7 @@ void CWebSocket::onResponse(bufferevent *bev) {
             break;
         }
 
-        std::vector<std::string> tokens = CStringHelper::split(line.get(), ':');
+        std::vector<std::string> tokens = zero::strings::split(line.get(), ":");
 
         if (tokens.size() < 2) {
             LOG_ERROR("bad header: %s", line.get());
@@ -413,7 +416,7 @@ void CWebSocket::onResponse(bufferevent *bev) {
             break;
         }
 
-        mResponseHeaders.insert({{tokens[0], CStringHelper::trimCopy(tokens[1])}});
+        mResponseHeaders.insert({{tokens[0], zero::strings::trim(tokens[1])}});
     }
 }
 
@@ -529,7 +532,10 @@ bool CWebSocket::sendFrame(emWebSocketOpcode opcode, const unsigned char *buffer
     }
 
     unsigned char maskingKey[MASKING_KEY_LENGTH] = {};
-    mRandom.fill((char *)maskingKey, MASKING_KEY_LENGTH);
+
+    for (unsigned char &i : maskingKey) {
+        i = static_cast<unsigned char>(mRandom() & 0xff);
+    }
 
     bufferevent_write(mBev, maskingKey, MASKING_KEY_LENGTH);
 

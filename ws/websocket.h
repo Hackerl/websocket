@@ -5,9 +5,9 @@
 #include <map>
 #include <vector>
 #include <string>
-#include <common/interface.h>
-#include <common/utils/random.h>
+#include <zero/interface.h>
 #include <openssl/ssl.h>
+#include <random>
 
 enum emWebSocketState : unsigned int {
     CONNECTING,
@@ -25,7 +25,7 @@ enum emWebSocketOpcode : unsigned int {
     PONG = 10
 };
 
-class IWebSocket : public Interface {
+class IWebSocket : public zero::Interface {
 public:
     virtual bool sendText(const std::string &message) = 0;
     virtual bool sendBinary(const unsigned char *buffer, unsigned long length) = 0;
@@ -38,7 +38,7 @@ public:
     virtual bool pong(const unsigned char *buffer, unsigned long length) = 0;
 };
 
-class IWebSocketHandler : public Interface {
+class IWebSocketHandler : public zero::Interface {
 public:
     virtual void onConnected(IWebSocket *ws) = 0;
     virtual void onClose(IWebSocket *ws, unsigned short code, const std::string &reason) = 0;
@@ -110,7 +110,7 @@ private:
     std::string mKey;
 
 private:
-    CRandom mRandom;
+    std::random_device mRandom;
 
 private:
     bufferevent *mBev{};
